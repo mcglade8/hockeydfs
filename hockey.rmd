@@ -1,0 +1,96 @@
+### Lines to stack
+
+# Run sim unstacked - identify teams you want exposure to using "ownership" sheet
+# Add top 3-4 teams to "teams_to_stack"; optimal stack sizes are c(3,3)
+
+stacking <-T
+set.seed(NULL)
+stack_sizes <- c(3,3)
+teams_to_stack <- c("EDM","MON", "TB", "COL", "WPG") # Teams added here will remove opposing goalies
+lines_to_stack <- c(gsub(" ", "", paste(teams_to_stack, "1")), gsub(" ", "", paste(teams_to_stack, "2"))) 
+allow_all_goalies <-F # Allows skaters vs. goalies; Turn on for testing/non-stacking
+num_lineups <- 20
+bans <- NULL#c("Shane Bowers")
+locks <- NULL #c("Russell Westbrook")
+max_exposure = 1
+
+
+
+
+
+data <- read_dk("C:/Users/jorda/Downloads/DKSalariesNHL.csv")
+
+projections <- read.csv("C:/Users/jorda/Downloads/DKImpliedProjectionsNHL.csv")
+
+projections <- projections %>%
+  rename(player = Name, fpts_proj = DK.Implied.FPs) %>%
+  select(player, fpts_proj, Line, PP.Line.1)
+
+projections$fpts_proj[is.na(projections$fpts_proj)] <- 0
+projections$Line[is.na(projections$Line)] <- ""
+
+data <- select(data, -fpts_proj) %>%
+  merge(projections, by = "player") %>%
+  mutate(teamline =paste0(team, Line), ppline = case_when(PP.Line.1 == TRUE ~ paste0(team, "PP1"), T ~ "noPP"))
+
+
+g_data <- data %>%
+  filter(position == "G")
+
+data <- data %>%
+  filter(position != "G") %>%
+  filter(player_id != "25307522")
+
+
+if(!is.null(teams_to_stack) & stacking & !allow_all_goalies){
+stacked_g <- g_data %>%
+ filter(opp_team %in% teams_to_stack) %>%
+  mutate(fpts_proj = -1000)
+
+unstacked_g <- g_data %>%
+  filter(!opp_team %in% teams_to_stack)
+
+g_data <- rbind(stacked_g, unstacked_g)
+}
+
+data <- rbind(data, g_data)
+
+data$SD <- case_when(data$fpts_proj > 0 ~ data$fpts_proj/2,
+                     T ~ 0)
+
+data <- data %>%
+  mutate(fpts_proj = case_when(
+  player %in% locks ~ 1000,
+  player %in% bans ~ -1000,
+  T ~ fpts_proj
+))
+
+if(!stacking){
+
+  teams_to_stack <- NULL
+  lines_to_stack <- NULL
+  stack_sizes <- NULL
+}
+
+
+
+data <- data[order(data$row_id),]
+for(i in 1:length(data$row_id)){
+  data$row_id[i] <- i
+}
+
+randomness <- function(x) rnorm(n, mean = data$fpts_proj, sd = data$SD)
+model <- model_dk_nhl(data)
+n <- nrow(data)
+
+
+results <- optimize_generic(data, model, L = 1, randomness = randomness, stack_sizes = stack_sizes, stack_teams = teams_to_stack, max_exposure = max_exposure)
+
+for(i in 1:(num_lineups-1)){
+new_lineup <- optimize_generic(data, model, L = 1, randomness = randomness, stack_sizes = stack_sizes, stack_teams = teams_to_stack, max_exposure = max_exposure)
+results <- append(results, new_lineup, after = length(results))
+
+}
+
+write_lineups(results, "C:/Users/jorda/Downloads/DKLineupsNHL.csv", site = "draftkings", sport = "nhl")
+
