@@ -421,6 +421,7 @@ for(i in 1:length(results)){
 
 
 
+
 ### My optimizer
 ```{r lpSolve-opto}
 
@@ -434,13 +435,14 @@ projections <- read_sheet("https://docs.google.com/spreadsheets/d/1ktMclwMSxcjW3
   teams_to_stack <-c("OTT", "MIN", "BOS", "VAN")
   stack1size <- 3
   stack2size <- 3
+  autostack <- T # If T runs auto-stacking function
   
   
   # Building dataframe
 
 
   
-  data <- select(data, player_id, player, salary)
+  data <- select(data, player_id, player, salary, opp_team)
   projections <- select(projections, Name, DK.Implied.FPs, Position, Team, Line, PP.Line.1) %>%
     rename(player = Name, fpts_proj = DK.Implied.FPs) %>%
     mutate(stackline = case_when(Position == "W" | Position == "C" | PP.Line.1~ paste0(Team, Line), T~Team))
@@ -448,6 +450,7 @@ projections <- read_sheet("https://docs.google.com/spreadsheets/d/1ktMclwMSxcjW3
   teams <- data$Team %>%
     unique()
   data$SD <- data$fpts_proj/2
+  if(!autostack){
     if(is.null(teams_to_stack)){
     teams_to_stack <- data$stackline %>%unique()
     stack1size <- 0
@@ -455,9 +458,40 @@ projections <- read_sheet("https://docs.google.com/spreadsheets/d/1ktMclwMSxcjW3
     }else{
     teams_to_stack <- c(gsub(" ", "", paste(teams_to_stack, "1")), gsub(" ", "", paste(teams_to_stack, "2"))) 
     }
+  }else{
+    odata <- data
+  }
 rm(lineups)
 t <- 0
 while(t < num_lineups){
+  
+  if(autostack){
+    data <- odata
+    
+    tide <- data %>%
+      filter(!is.na(Line))%>%
+      select(stackline) %>%
+      unique()
+    tide$tide <- runif(length(tide$stackline), min = -2, max = 2)
+    pptide <- data %>%
+      filter(PP.Line.1)%>%
+      select(Team, PP.Line.1) %>%
+      unique()
+    pptide$pptide <- runif(length(pptide$Team), min = -2, max = 2)
+    
+    data <- merge(data, tide, all.x = T) %>%
+      merge(pptide, all.x = T)
+    
+    data$pptide[is.na(data$pptide)] <- 0
+    data$tide[is.na(data$tide)] <- 0
+    
+    data$fpts_proj <- data$fpts_proj + data$SD * (data$pptide+data$tide)
+    teams_to_stack <- tide$stackline
+    
+  }
+  
+  
+  
 ### my optimizer
 
   
@@ -489,6 +523,8 @@ matrix_vector <- c(vsalary, vcenter, vwing, vdef, vgoal, vutil, vplaying)
 
 for(i in 1:length(teams)){
   vteam <- as.numeric(data$Team==teams[i])
+  opp_g <- as.numeric(data$opp_team == teams[i] & data$Position=="G")*3
+  vteam <- vteam+opp_g
   matrix_vector <- c(matrix_vector, vteam)
 }
 for(i in 1:length(stacks)){
