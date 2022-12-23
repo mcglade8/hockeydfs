@@ -1,26 +1,63 @@
+---
+title: "HockeyDFS.rmd"
+output: html_document
+date: "2022-12-19"
+---
+
+
+### Setup
+```{r setup, include= FALSE}
+library(lpSolve)
+library(dplyr)
+library(tidyverse)
+library(ggplot2)
+library(coach)
+library(googlesheets4)
+
+
+#   Unsure if these are needed atm
+#library(TTR)
+#library(XML)
+#library(RCurl)
+
+```
+
+
+
+
+### Previous function - better at present ###
+```{r nhl}
+
 ### Lines to stack
 
 # Run sim unstacked - identify teams you want exposure to using "ownership" sheet
 # Add top 3-4 teams to "teams_to_stack"; optimal stack sizes are c(3,3)
+# DK function will identify lines to stack from those teams; FD function is not updated currently
 
 stacking <-T
 set.seed(NULL)
 stack_sizes <- c(3,3)
-teams_to_stack <- c("EDM","MON", "TB", "COL", "WPG") # Teams added here will remove opposing goalies
+teams_to_stack <- c("COL", "VGK", "EDM", "MIN") # Teams added here will remove opposing goalies
 lines_to_stack <- c(gsub(" ", "", paste(teams_to_stack, "1")), gsub(" ", "", paste(teams_to_stack, "2"))) 
-allow_all_goalies <-F # Allows skaters vs. goalies; Turn on for testing/non-stacking
-num_lineups <- 20
+allow_all_goalies <- !stacking # Allows skaters vs. goalies; Turn on for testing/non-stacking
+num_lineups <-20
 bans <- NULL#c("Shane Bowers")
 locks <- NULL #c("Russell Westbrook")
 max_exposure = 1
+DK <- T
+FD <- F
+diversity <- 3 # increase SD for final results
+
+odata <- read_dk("C:/Users/jorda/Downloads/DKSalariesNHL.csv")
+oprojections <- read_sheet("https://docs.google.com/spreadsheets/d/1ktMclwMSxcjW3WIHOdMhnNpzWcmO6gPqKdtLaAHN2nQ/edit#gid=1735928548")
 
 
+if(DK){
+  for(x in 1:num_lineups){
 
-
-
-data <- read_dk("C:/Users/jorda/Downloads/DKSalariesNHL.csv")
-
-projections <- read.csv("C:/Users/jorda/Downloads/DKImpliedProjectionsNHL.csv")
+    data <- odata
+    projections <- oprojections
+    
 
 projections <- projections %>%
   rename(player = Name, fpts_proj = DK.Implied.FPs) %>%
@@ -31,31 +68,31 @@ projections$Line[is.na(projections$Line)] <- ""
 
 data <- select(data, -fpts_proj) %>%
   merge(projections, by = "player") %>%
-  mutate(teamline =paste0(team, Line), ppline = case_when(PP.Line.1 == TRUE ~ paste0(team, "PP1"), T ~ "noPP"))
+  mutate(team = paste0(team, Line))#case_when(position == "C" | position == "LW" | position == "RW" | PP.Line.1 ~ paste0(team, Line), T ~ team))
 
 
 g_data <- data %>%
   filter(position == "G")
 
-data <- data %>%
-  filter(position != "G") %>%
-  filter(player_id != "25307522")
-
-
-if(!is.null(teams_to_stack) & stacking & !allow_all_goalies){
+# data <- data %>%
+#   filter(position != "G") %>%
+#   filter(player_id != "25307522")
+# 
+# 
+# if(!is.null(teams_to_stack) & stacking & !allow_all_goalies){
 stacked_g <- g_data %>%
- filter(opp_team %in% teams_to_stack) %>%
-  mutate(fpts_proj = -1000)
+ filter(opp_team %in% teams_to_stack)
+#   mutate(fpts_proj = -1000)
+# 
+# unstacked_g <- g_data %>%
+#   filter(!opp_team %in% teams_to_stack)
+# 
+# g_data <- rbind(stacked_g, unstacked_g)
+# }
+# 
+# data <- rbind(data, g_data)
 
-unstacked_g <- g_data %>%
-  filter(!opp_team %in% teams_to_stack)
-
-g_data <- rbind(stacked_g, unstacked_g)
-}
-
-data <- rbind(data, g_data)
-
-data$SD <- case_when(data$fpts_proj > 0 ~ data$fpts_proj/2,
+data$SD <- diversity * case_when(data$fpts_proj > 0 ~ data$fpts_proj/2,
                      T ~ 0)
 
 data <- data %>%
@@ -70,9 +107,33 @@ if(!stacking){
   teams_to_stack <- NULL
   lines_to_stack <- NULL
   stack_sizes <- NULL
+  pick_lines <- NULL
+}else{
+
+pick_lines <- data %>%
+  group_by(team, opp_team) %>%
+  summarise(sum_line = sum(fpts_proj)) %>%
+  filter(team %in% lines_to_stack)
+
+pick_lines$select <- runif(length(pick_lines$team), 0, pick_lines$sum_line)
+
+first_line <- pick_lines$team[which.max(pick_lines$select)]
+fl_opp <- pick_lines$opp_team[which.max(pick_lines$select)]
+
+pick_lines <- filter(pick_lines, !opp_team == fl_opp)
+
+second_line <-pick_lines$team[which.max(pick_lines$select)]
+
+pick_lines <- c(first_line, second_line)
+
+data <- mutate(data, fpts_proj = case_when(
+  opp_team %in% stacked_g$team & !team %in% pick_lines ~ -5,
+  position == "G" & opp_team %in% stacked_g$opp_team ~ -1000,
+  T ~ fpts_proj
+))
+
 }
-
-
+data <- select(data, -PP.Line.1)
 
 data <- data[order(data$row_id),]
 for(i in 1:length(data$row_id)){
@@ -84,13 +145,421 @@ model <- model_dk_nhl(data)
 n <- nrow(data)
 
 
-results <- optimize_generic(data, model, L = 1, randomness = randomness, stack_sizes = stack_sizes, stack_teams = teams_to_stack, max_exposure = max_exposure)
+if(x == 1){
+rm(results)
+results <- optimize_generic(data, model, L = 1, randomness = randomness, stack_sizes = stack_sizes, stack_teams = pick_lines, max_exposure = max_exposure)
+}else{
+  new_result <- optimize_generic(data, model, L = 1, randomness = randomness, stack_sizes = stack_sizes, stack_teams = pick_lines, max_exposure = max_exposure)
+  results <- append(results, new_result, after = length(results))
+}
+}
 
-for(i in 1:(num_lineups-1)){
-new_lineup <- optimize_generic(data, model, L = 1, randomness = randomness, stack_sizes = stack_sizes, stack_teams = teams_to_stack, max_exposure = max_exposure)
+write_lineups(results, "C:/Users/jorda/Downloads/DKLineupsNHL.csv", site = "draftkings", sport = "nhl")
+# 
+# for(i in 1:length(results)){
+#   
+#   lineup <- as.data.frame(results[[i]]) %>%
+#     select(player_id, position) %>%
+#     mutate(position = case_when(position == "LW" | position == "RW" ~ "W",T ~ position))
+# lc <- filter(lineup, position == "C") %>% select(-position)
+# lw <-  filter(lineup, position == "W") %>% select(-position)
+# ld <-  filter(lineup, position == "D") %>% select(-position)
+# lg <-  filter(lineup, position == "G") %>% select(-position)
+# u <- case_when(length(lc$player_id)>2 ~ lc$player_id[3], length(lw$player_id)>3 ~ lw$player_id[4], length(ld$player_id)>2 ~ ld$player_id[3])
+#     lineup <- rbind(lc, lw, ld, lg, u)
+#   
+#     if(i == 1){
+#       lineups <- lineup
+#     }else{
+#       lineups <- cbind(lineups, lineup)
+#     }
+# }
+# 
+# lineups <- t(lineups)
+# colnames(lineups) <- c("C", "C", "W", "W", "W", "D", "D", "G", "UTIL")
+# 
+# write.csv(lineups, "C:/Users/jorda/Downloads/DKLineupsNHL.csv")
+
+}
+
+
+```
+
+
+### Lineup Editor
+```{r lineup-editor}
+
+### Build lineups above, then use this to edit entries for direct upload
+
+plineups <- read.csv("C:/Users/jorda/Downloads/DKEntriesNHL.csv")
+
+plineups <- filter(plineups, !is.na(Entry.ID) & !is.na(as.numeric(Entry.ID))) %>%
+  select(Entry.ID, Contest.Name, Contest.ID, Entry.Fee)
+
+newlineups <- read.csv("C:/Users/jorda/Downloads/DKLineupsNHL.csv")
+
+newlineups <- cbind(plineups, newlineups)
+colnames(newlineups) <- c("Entry ID", "Contest Name", "Contest ID", "Entry Fee", "C", "C", "W", "W", "W", "D", "D", "G", "UTIL")
+
+write.csv(newlineups, "C:/Users/jorda/Downloads/DKEntriesNHL.csv", row.names = FALSE)
+
+```
+
+
+### Lineup Generator revamp - currently worse
+```{r lineup-generation}
+### Lines to stack
+
+# Run sim unstacked - identify teams you want exposure to using "ownership" sheet
+# Add top 3-4 teams to "teams_to_stack"; optimal stack sizes are c(3,3)
+
+stacking <-T
+set.seed(NULL)
+stack_sizes <- c(3,3)
+teams_to_stack <- NULL#c("BOS2", "STL3") 
+num_lineups <-20
+pbans <-c("Jordan Kyrou")
+plocks <- NULL #c("Russell Westbrook")
+
+team_correlation <- 2
+#line_correlation <- 7 #not in use, replaced by RNG function
+pp_correlation <- 3.5 
+
+
+
+
+odata <- read_dk("C:/Users/jorda/Downloads/DKSalariesNHL.csv")
+
+#oprojections <- read.csv("C:/Users/jorda/Downloads/DKImpliedProjectionsNHL.csv")
+oprojections <- read_sheet("https://docs.google.com/spreadsheets/d/1ktMclwMSxcjW3WIHOdMhnNpzWcmO6gPqKdtLaAHN2nQ/edit#gid=1735928548")
+
+first_lineup <- T
+for(i in 1:(num_lineups)){
+  projections <- oprojections
+  data <- odata
+  
+projections <- projections %>%
+  rename(player = Name, fpts_proj = DK.Implied.FPs) %>%
+  select(player, fpts_proj, Position, Line, PP.Line.1)
+
+projections$fpts_proj[is.na(projections$fpts_proj)] <- 0
+projections$Line[is.na(projections$Line)] <- ""
+
+data <- select(data, -fpts_proj) %>%
+  merge(projections, by = "player") %>%
+  mutate(teamline =paste0(team, Line), ppline = case_when(PP.Line.1 == TRUE ~ paste0(team, "PP1"), T ~ "noPP"))
+
+toplines <- data %>%
+  group_by(teamline) %>%
+  summarise(line_proj = sum(fpts_proj), line_cost = sum(salary), best_player = max(fpts_proj)) %>%
+  mutate(value = line_proj/line_cost*1000) %>%
+  mutate(usefulness = (line_proj*1.5-22.5)/10 + (value*1.5-.8)/2 + (best_player*1.5-12.5)/3.5)
+
+toplines <- toplines[order(-toplines$usefulness),]
+
+teams_to_stack <- toplines$teamline[1:6]
+
+g_data <- data %>%
+  filter(position == "G")%>%
+  mutate(fhold = fpts_proj)
+
+data <- data %>%
+  filter(position != "G")%>%
+  mutate(fhold = fpts_proj) 
+  
+tide <- data %>%
+  select(team) %>%
+  unique()
+tide$tide <- rnorm(length(tide$team), 0, team_correlation)
+# line_tide <- data %>%
+#   select(teamline) %>%
+#   unique()
+# line_tide$line_tide <- rnorm(length(line_tide$teamline), 0, line_correlation)
+pptide <- data %>%
+  select(ppline) %>%
+  unique()
+pptide$pptide <- rnorm(length(pptide$ppline), 0, pp_correlation)
+pptide <- filter(pptide, !ppline == "noPP")
+
+data <- merge(data, tide) %>%
+#  merge(line_tide, all.x = TRUE) %>%
+  merge(pptide, all.x = TRUE)
+data$pptide[is.na(data$pptide)]<- 0
+
+gtide <- data %>%
+  group_by(opp_team) %>%
+  summarise(tide = max(tide)+max(pptide)+max(fhold))
+
+mean_g <- mean(gtide$tide)
+sd_g <- sd(gtide$tide)
+
+gtide$tide <- (gtide$tide-mean_g)/sd_g
+
+max_fhold <- max(data$fhold)
+
+tide_effect <- data %>%
+  group_by(team) %>%
+  summarise(team_tide_effect = sum(fhold))
+
+line_tide_effect <- data %>%
+  group_by(teamline, team) %>%
+  summarise(tide_effect = sum(fhold)) %>%
+  merge(tide_effect)
+
+line_tide_effect$rng <- runif(length(line_tide_effect$tide_effect), 0, line_tide_effect$tide_effect)
+
+sum_rng <- line_tide_effect %>%
+  group_by(team) %>%
+  summarise(sum_rng = sum(rng))
+line_tide_effect <- merge(line_tide_effect, sum_rng)
+
+line_tide_effect$new_effect <- line_tide_effect$rng*line_tide_effect$team_tide_effect/line_tide_effect$sum_rng
+
+max_effect <- max(line_tide_effect$new_effect)
+
+team_tide <- tide_effect %>%
+  select(team) %>%
+  unique()
+
+keep_one_line <- line_tide_effect %>%
+  group_by(team) %>%
+  summarise(new_effect = max(new_effect)) %>%
+  mutate(keep = 1)
+line_tide_effect <- merge(line_tide_effect, keep_one_line, all.x = TRUE)%>%
+  mutate(new_effect = case_when(keep == 1 ~ new_effect, T~-1000))
+
+team_tide$line_random <- rnorm(length(team_tide$team), 1, .3)
+line_tide_effect <- merge(line_tide_effect, team_tide) %>%
+  mutate(new_effect = new_effect * line_random)
+
+tide_effect <- mutate(line_tide_effect, tide_effect = new_effect/max_effect) %>%
+  select(teamline, tide_effect, new_effect) %>%
+  rename(line_tide = new_effect)
+
+data <- data %>%
+  merge(tide_effect) %>%
+  mutate(line_tide = case_when(Position == "D" ~ line_tide*.1, Position == "W" ~ line_tide*.27, Position == "C" ~ line_tide*.27, T ~ line_tide)) %>%
+  mutate(fpts_proj = fhold +tide+ line_tide + pptide) %>%
+  select(-tide, -line_tide, -pptide, -tide_effect)
+
+
+g_data <- merge(g_data, gtide, all.x = TRUE) %>%
+  mutate(fpts_proj = fhold + tide*fhold, team = "G") %>%
+  select(-tide)
+
+# findg <- g_data %>%
+#   filter(player == g_data$player[which.max(g_data$fpts_proj)])
+
+data <- rbind(data, g_data)
+
+find_goalie <- g_data$player[which.max(g_data$fpts_proj)]
+ban_opp <- g_data$opp_team[which.max(g_data$fpts_proj)]
+ban_opp <- data %>%
+  filter(team == ban_opp)
+locks <- c(plocks, find_goalie)
+bans <- c(pbans, ban_opp$player)
+
+data <- filter(data, fhold > 0)
+
+data <- data %>%
+  mutate(fpts_proj = case_when(
+  # player %in% findg$player ~ 1000,
+  # team %in% findg$opp_team ~ -1000,
+  player %in% locks ~ 1000,
+  player %in% bans ~ -1000,
+  T ~ fpts_proj
+), max_exposure = case_when(fhold>15~1, fhold<=15~fhold/15))
+
+if(!stacking){
+  teams_to_stack <- NULL
+  stack_sizes <- NULL
+}
+
+
+#data$fpts_proj <- case_when(data$Line == "4" & !data$PP.Line.1 ~ 0.5, data$Line == "3" & !data$PP.Line.1 ~ 1, T ~ data$fpts_proj)
+data$SD <- data$fhold/2
+data$team <- data$teamline
+
+data <- data[order(data$row_id),]
+for(i in 1:length(data$row_id)){
+  data$row_id[i] <- i
+}
+
+randomness <- function(x) rnorm(n, mean = data$fpts_proj, sd = data$SD)
+model <- model_dk_nhl(data)
+n <- nrow(data)
+
+if(!first_lineup){
+
+new_lineup <- optimize_generic(data, model, L = 1, randomness = randomness, stack_sizes = stack_sizes, stack_teams = teams_to_stack, max_exposure = data$max_exposure)
 results <- append(results, new_lineup, after = length(results))
+}else{
+results <- optimize_generic(data, model, L = 1, randomness = randomness, stack_sizes = stack_sizes, stack_teams = teams_to_stack, max_exposure = data$max_exposure)
+first_lineup <- F
+}
 
 }
 
 write_lineups(results, "C:/Users/jorda/Downloads/DKLineupsNHL.csv", site = "draftkings", sport = "nhl")
 
+# 
+# old_proj <- oprojections %>%
+#   select(Name, DK.Implied.FPs)
+# write.csv(old_proj, "C:/Users/jorda/Downloads/oldprojections.csv")
+```
+
+
+### View results
+```{r view-results}
+
+for(i in 1:length(results)){
+  view(results[[i]])
+}
+
+
+```
+
+
+
+### My optimizer
+```{r lpSolve-opto}
+
+
+data <- read_dk("C:/Users/jorda/Downloads/DKSalariesNHL.csv")
+projections <- read_sheet("https://docs.google.com/spreadsheets/d/1ktMclwMSxcjW3WIHOdMhnNpzWcmO6gPqKdtLaAHN2nQ/edit#gid=1735928548")
+# Parameters
+
+
+  numlineups <- 20
+  teams_to_stack <-c("OTT", "MIN", "BOS", "VAN")
+  stack1size <- 3
+  stack2size <- 3
+  
+  
+  # Building dataframe
+
+
+  
+  data <- select(data, player_id, player, salary)
+  projections <- select(projections, Name, DK.Implied.FPs, Position, Team, Line, PP.Line.1) %>%
+    rename(player = Name, fpts_proj = DK.Implied.FPs) %>%
+    mutate(stackline = case_when(Position == "W" | Position == "C" | PP.Line.1~ paste0(Team, Line), T~Team))
+  data <- merge(data, projections)
+  teams <- data$Team %>%
+    unique()
+  data$SD <- data$fpts_proj/2
+    if(is.null(teams_to_stack)){
+    teams_to_stack <- data$stackline %>%unique()
+    stack1size <- 0
+    stack2size <- 0
+    }else{
+    teams_to_stack <- c(gsub(" ", "", paste(teams_to_stack, "1")), gsub(" ", "", paste(teams_to_stack, "2"))) 
+    }
+rm(lineups)
+t <- 0
+while(t < num_lineups){
+### my optimizer
+
+  
+  # Select stacks to use this lineup prior to optimization
+  stacks <- data %>%filter(stackline %in% teams_to_stack) %>%
+    group_by(stackline) %>% summarise(team_proj = sum(fpts_proj)) 
+  stacks$select <- runif(length(stacks$team_proj), 0, stacks$team_proj)
+  stack1 <- stacks$stackline[which.max(stacks$select)]
+  stacks<- filter(stacks, !stackline == stack1)
+  stack2 <- stacks$stackline[which.max(stacks$select)]
+  stacks <- c(stack1, stack2)
+
+## Objective
+
+objective.in <- rnorm(length(data$fpts_proj), data$fpts_proj, data$SD)
+
+## Constraint matrix - salary, is in a stack, position, util
+
+
+vsalary <- data$salary
+vcenter <- as.numeric(data$Position == "C")
+vwing <- as.numeric(data$Position == "W")
+vdef <- as.numeric(data$Position == "D")
+vgoal <- as.numeric(data$Position == "G")
+vutil <- as.numeric(!vgoal)
+vplaying <- as.numeric(data$fpts_proj > 0)
+
+matrix_vector <- c(vsalary, vcenter, vwing, vdef, vgoal, vutil, vplaying)
+
+for(i in 1:length(teams)){
+  vteam <- as.numeric(data$Team==teams[i])
+  matrix_vector <- c(matrix_vector, vteam)
+}
+for(i in 1:length(stacks)){
+  vteam <- as.numeric(data$stackline==stacks[i])
+  matrix_vector <- c(matrix_vector, vteam)
+}
+  
+matrix_vector[is.na(matrix_vector)] <- 0
+matrix_vector[is.infinite(matrix_vector)] <- 0
+
+const.mat = matrix(matrix_vector, nrow = length(matrix_vector)/length(data$salary), byrow = TRUE)
+
+## Define constraints and direction - 50000 salary
+const.rhs = c(50000,  2,  3,  2,   1,    8,    9)
+const.dir = c("<=", ">=",">=",">=", "==", "==", "==")
+
+for(i in 1:length(teams)){
+  const.rhs[length(const.rhs)+1] = 3+i%%2
+  const.dir[length(const.dir)+1] = "<="
+}
+
+const.rhs = c(const.rhs, stack1size, stack2size)
+const.dir = c(const.dir, ">=", ">=")
+
+
+
+### Optimize
+objective.in[is.nan(objective.in)] <- 0
+objective.in[objective.in < 0] <- 0
+optimum = lp(direction = "max", objective.in, const.mat, const.dir, const.rhs, all.bin = TRUE)
+
+data$optimal <- optimum$solution
+if(sum(data$optimal)>0){
+lineup <- filter(data, optimal == 1) %>% select(player_id, Position)
+lc <- filter(lineup, Position == "C") %>% select(-Position)
+lw <-  filter(lineup, Position == "W") %>% select(-Position)
+ld <-  filter(lineup, Position == "D") %>% select(-Position)
+lg <-  filter(lineup, Position == "G") %>% select(-Position)
+u <- case_when(length(lc$player_id)>2 ~ lc$player_id[3], length(lw$player_id)>3 ~ lw$player_id[4], length(ld$player_id)>2 ~ ld$player_id[3])
+lc<- filter(lc, !player_id == u)
+lw<- filter(lw, !player_id == u)
+ld<- filter(ld, !player_id == u)
+lineup <- c(lc$player_id, lw$player_id, ld$player_id, lg$player_id, u)
+
+
+if(t > 0){
+  lineups <- cbind(lineups, lineup)
+} else{
+  lineups <- as.data.frame(lineup)
+}
+ lineups <- lineups %>% unique()
+ t <- ncol(lineups)
+}
+
+}
+
+# }
+# 
+# ownership <- data %>%
+#   select(player)
+# ownership$ownership_pct <- 0
+# 
+# for(i in 1:length(ownership$player)){
+#   ownership$ownership_pct[i] = sum(lineups == ownership$player[i])
+# }
+# ownership$ownership_pct <- ownership$ownership_pct/ length(lineups[,1])*100
+# 
+
+
+lineups <- t(lineups)
+colnames(lineups) <- c("C", "C", "W", "W", "W", "D", "D", "G", "UTIL")
+
+write.csv(lineups, "C:/Users/jorda/Downloads/DKLineupsNHL.csv", row.names = FALSE)
+```
