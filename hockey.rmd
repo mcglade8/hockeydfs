@@ -13,7 +13,8 @@ library(tidyverse)
 library(ggplot2)
 library(coach)
 library(googlesheets4)
-
+library(R.utils)
+library(tm)
 
 #   Unsure if these are needed atm
 #library(TTR)
@@ -421,92 +422,112 @@ for(i in 1:length(results)){
 
 
 
-
 ### My optimizer
 ```{r lpSolve-opto}
+# Parameters
+ 
+# stacks may need to be full info from all_lines for creating the vectors
 
-
+  num_lineups <- 100
+  stack1size <- 4
+  stack2size <- 3
+  testing <- F
+  variance <- 15 # increase here increases lineup diversity with regards to stack selection
+  darts <- 0.01 # ownership cutoff for dart throw players; lower for big slates
+  
+  timeout_threshhold <- 0.8
+  
+  
+if(!testing){
 data <- read_dk("C:/Users/jorda/Downloads/DKSalariesNHL.csv")
 projections <- read_sheet("https://docs.google.com/spreadsheets/d/1ktMclwMSxcjW3WIHOdMhnNpzWcmO6gPqKdtLaAHN2nQ/edit#gid=1735928548")
-# Parameters
 
 
-  numlineups <- 20
-  teams_to_stack <-c("OTT", "MIN", "BOS", "VAN")
-  stack1size <- 3
-  stack2size <- 3
-  autostack <- T # If T runs auto-stacking function
-  
-  
   # Building dataframe
 
 
   
   data <- select(data, player_id, player, salary, opp_team)
-  projections <- select(projections, Name, DK.Implied.FPs, Position, Team, Line, PP.Line.1) %>%
-    rename(player = Name, fpts_proj = DK.Implied.FPs) %>%
-    mutate(stackline = case_when(Position == "W" | Position == "C" | PP.Line.1~ paste0(Team, Line), T~Team))
-  data <- merge(data, projections)
-  teams <- data$Team %>%
+  projections <- select(projections, Name, DK.Implied.FPs, Position, Team, Line, PP.Line.1, DKOwnProj) %>%
+    rename(player = Name, fpts_proj = DK.Implied.FPs) 
+  
+   data <- merge(data, projections)
+   teams <- data$Team %>%
     unique()
-  data$SD <- data$fpts_proj/2
-  if(!autostack){
-    if(is.null(teams_to_stack)){
-    teams_to_stack <- data$stackline %>%unique()
-    stack1size <- 0
-    stack2size <- 0
-    }else{
-    teams_to_stack <- c(gsub(" ", "", paste(teams_to_stack, "1")), gsub(" ", "", paste(teams_to_stack, "2"))) 
-    }
-  }else{
-    odata <- data
-  }
+
+   odata <- data
+}
+  
+timeouts <- 0
 rm(lineups)
 t <- 0
 while(t < num_lineups){
+  timeouts <- timeouts+1
   
-  if(autostack){
-    data <- odata
-    
-    tide <- data %>%
-      filter(!is.na(Line))%>%
-      select(stackline) %>%
-      unique()
-    tide$tide <- runif(length(tide$stackline), min = -2, max = 2)
-    pptide <- data %>%
-      filter(PP.Line.1)%>%
-      select(Team, PP.Line.1) %>%
-      unique()
-    pptide$pptide <- runif(length(pptide$Team), min = -2, max = 2)
-    
-    data <- merge(data, tide, all.x = T) %>%
-      merge(pptide, all.x = T)
-    
-    data$pptide[is.na(data$pptide)] <- 0
-    data$tide[is.na(data$tide)] <- 0
-    
-    data$fpts_proj <- data$fpts_proj + data$SD * (data$pptide+data$tide)
-    teams_to_stack <- tide$stackline
-    
-  }
+  # tryCatch(
+  # expr = {
+  #   withTimeout({
   
-  
+  data <- odata %>%
+    filter(!(player == "Sebastian Aho" & salary <= 3500)) %>%
+    distinct()
+    
+      first_line <- data %>%
+      filter(Line == 1) %>%
+      group_by(Team) %>%
+      summarise(line_proj = sum(fpts_proj), cost = sum(salary)) %>%
+      mutate(stack = gsub(" ", "", paste(Team, "1")))
+      second_line <- data %>%
+      filter(Line == 2) %>%
+      group_by(Team) %>%
+      summarise(line_proj = sum(fpts_proj), cost = sum(salary)) %>%
+      mutate(stack = gsub(" ", "", paste(Team, "2")))
+      third_line <- data %>%
+      filter(Line == 3) %>%
+      group_by(Team) %>%
+      summarise(line_proj = sum(fpts_proj), cost = sum(salary)) %>%
+      mutate(stack = gsub(" ", "", paste(Team, "3")))
+      fourth_line <- data %>%
+      filter(Line == 4) %>%
+      group_by(Team) %>%
+      summarise(line_proj = sum(fpts_proj), cost = sum(salary)) %>%
+      mutate(stack = gsub(" ", "", paste(Team, "4")))
+      pp_line <- data %>%
+      filter(PP.Line.1 == TRUE) %>%
+      group_by(Team) %>%
+      summarise(line_proj = sum(fpts_proj)/2, cost = sum(salary)) %>%
+      mutate(stack = gsub(" ", "", paste(Team, "PP")))
+      
+      all_lines <- rbind(first_line, second_line, third_line, fourth_line, pp_line)
+      all_lines$select <- runif(length(all_lines$Team), 0, all_lines$line_proj+variance)
+      all_lines <- all_lines %>%
+        group_by(Team) %>%
+        slice_max(select)
+      
+      all_lines <- all_lines[order(all_lines$select, decreasing = T),]
+      
+      stacks <- all_lines %>%
+        ungroup() %>%
+        slice_max(order_by = select, n = 2)
+    
+      data<- data %>%
+        mutate(stackline = case_when(
+          gsub(" ", "", paste0(Team, Line)) == stacks$stack[1] ~ "stack1",
+          gsub(" ", "", paste0(Team, Line)) == stacks$stack[2] ~ "stack2",
+          Position %in% c("G") & opp_team %in% stacks$stack ~ "opp_g",
+          Position %in% c("G") ~ "G",
+          Team %in% stacks$Team ~ "ignore",
+          T ~ "unstacked"
+        ))
+
   
 ### my optimizer
 
-  
-  # Select stacks to use this lineup prior to optimization
-  stacks <- data %>%filter(stackline %in% teams_to_stack) %>%
-    group_by(stackline) %>% summarise(team_proj = sum(fpts_proj)) 
-  stacks$select <- runif(length(stacks$team_proj), 0, stacks$team_proj)
-  stack1 <- stacks$stackline[which.max(stacks$select)]
-  stacks<- filter(stacks, !stackline == stack1)
-  stack2 <- stacks$stackline[which.max(stacks$select)]
-  stacks <- c(stack1, stack2)
 
+  
 ## Objective
 
-objective.in <- rnorm(length(data$fpts_proj), data$fpts_proj, data$SD)
+objective.in <- rnorm(length(data$fpts_proj), data$fpts_proj, sd = 2+data$fpts_proj/4)
 
 ## Constraint matrix - salary, is in a stack, position, util
 
@@ -518,19 +539,14 @@ vdef <- as.numeric(data$Position == "D")
 vgoal <- as.numeric(data$Position == "G")
 vutil <- as.numeric(!vgoal)
 vplaying <- as.numeric(data$fpts_proj > 0)
+vdarts <- data$DKOwnProj < darts & !data$stackline  == "stackF"
+vstack1 <- as.numeric(data$stackline == "stack1")
+vstack2 <- as.numeric(data$stackline == "stack2")
+voneoff <- as.numeric(data$stackline == "unstacked")
+voppg <- as.numeric(data$stackline == "opp_g")
 
-matrix_vector <- c(vsalary, vcenter, vwing, vdef, vgoal, vutil, vplaying)
+matrix_vector <- c(vsalary, vcenter, vwing, vdef, vgoal, vutil, vplaying,  vdarts, vstack1,vstack2,  voneoff, voppg)
 
-for(i in 1:length(teams)){
-  vteam <- as.numeric(data$Team==teams[i])
-  opp_g <- as.numeric(data$opp_team == teams[i] & data$Position=="G")*3
-  vteam <- vteam+opp_g
-  matrix_vector <- c(matrix_vector, vteam)
-}
-for(i in 1:length(stacks)){
-  vteam <- as.numeric(data$stackline==stacks[i])
-  matrix_vector <- c(matrix_vector, vteam)
-}
   
 matrix_vector[is.na(matrix_vector)] <- 0
 matrix_vector[is.infinite(matrix_vector)] <- 0
@@ -538,16 +554,9 @@ matrix_vector[is.infinite(matrix_vector)] <- 0
 const.mat = matrix(matrix_vector, nrow = length(matrix_vector)/length(data$salary), byrow = TRUE)
 
 ## Define constraints and direction - 50000 salary
-const.rhs = c(50000,  2,  3,  2,   1,    8,    9)
-const.dir = c("<=", ">=",">=",">=", "==", "==", "==")
+const.rhs = c(50000,  2,  3,  2,   1,    8,    9, 1, stack1size, stack2size, 1, 0)
+const.dir = c("<=", ">=",">=",">=", "==", "==", "==",  "<=", "==","==", ">=", "==")
 
-for(i in 1:length(teams)){
-  const.rhs[length(const.rhs)+1] = 3+i%%2
-  const.dir[length(const.dir)+1] = "<="
-}
-
-const.rhs = c(const.rhs, stack1size, stack2size)
-const.dir = c(const.dir, ">=", ">=")
 
 
 
@@ -556,6 +565,7 @@ objective.in[is.nan(objective.in)] <- 0
 objective.in[objective.in < 0] <- 0
 optimum = lp(direction = "max", objective.in, const.mat, const.dir, const.rhs, all.bin = TRUE)
 
+#rm(lineup)
 data$optimal <- optimum$solution
 if(sum(data$optimal)>0){
 lineup <- filter(data, optimal == 1) %>% select(player_id, Position)
@@ -571,31 +581,77 @@ lineup <- c(lc$player_id, lw$player_id, ld$player_id, lg$player_id, u)
 
 
 if(t > 0){
+ 
   lineups <- cbind(lineups, lineup)
+
 } else{
+
   lineups <- as.data.frame(lineup)
+
 }
- lineups <- lineups %>% unique()
+lineups <- lineups %>% unique()
  t <- ncol(lineups)
 }
+    
+# }, timeout = timeout_threshhold)
+#   }, TimeoutException = function(ex) { 
+#     #cat("\nTimeout. Lineups built so far: ", n-1, "/", num_lineups," \n")
+#     
+# })
+  
 
+    
 }
 
-# }
-# 
-# ownership <- data %>%
-#   select(player)
-# ownership$ownership_pct <- 0
-# 
-# for(i in 1:length(ownership$player)){
-#   ownership$ownership_pct[i] = sum(lineups == ownership$player[i])
-# }
-# ownership$ownership_pct <- ownership$ownership_pct/ length(lineups[,1])*100
-# 
 
+ownership <- data %>%
+  select(player, player_id)
+ownership$ownership_pct <- 0
+
+for(i in 1:length(ownership$player)){
+  ownership$ownership_pct[i] = sum(lineups == ownership$player_id[i])
+}
+ownership$ownership_pct <- ownership$ownership_pct/ length(lineups[,1])*100
+ownership <- ownership[order(ownership$ownership_pct, decreasing = TRUE),]
+
+cat("\nBuild fails: ", timeouts-t)
 
 lineups <- t(lineups)
 colnames(lineups) <- c("C", "C", "W", "W", "W", "D", "D", "G", "UTIL")
 
 write.csv(lineups, "C:/Users/jorda/Downloads/DKLineupsNHL.csv", row.names = FALSE)
 ```
+
+
+### Lineup Editor
+```{r lineup-editor}
+
+### Build lineups above, then use this to edit entries for direct upload
+
+plineups <- read.csv("C:/Users/jorda/Downloads/DKEntriesNHL.csv")
+
+plineups <- filter(plineups, !is.na(Entry.ID) & !is.na(as.numeric(Entry.ID))) %>%
+  select(Entry.ID, Contest.Name, Contest.ID, Entry.Fee)
+
+newlineups <- read.csv("C:/Users/jorda/Downloads/DKLineupsNHL.csv")
+
+newlineups <- cbind(plineups, newlineups)
+colnames(newlineups) <- c("Entry ID", "Contest Name", "Contest ID", "Entry Fee", "C", "C", "W", "W", "W", "D", "D", "G", "UTIL")
+
+write.csv(newlineups, "C:/Users/jorda/Downloads/DKEntriesNHL.csv", row.names = FALSE)
+
+```
+
+
+### Game Analysis
+```{r game-analysis}
+
+sheet_data <- read_sheet("https://docs.google.com/spreadsheets/d/1ktMclwMSxcjW3WIHOdMhnNpzWcmO6gPqKdtLaAHN2nQ/edit#gid=1735928548")
+
+#x <- sheet_data[complete.cases(sheet_data),]
+x <- filter(sheet_data, DKOwnProj > 0 & Position == "G" & DK.Implied.FPs > 0 & DK.Implied.FPs != 10)
+
+fp_model <- lm(DK.Implied.FPs ~ `DK Salary` + DKOwnProj, data = x)
+summary(fp_model)
+```
+
