@@ -31,13 +31,13 @@ library(tm)
   stack1size <- 4
   stack2size <- 3
   testing <- F
-  variance <- 10 # increase here increases lineup diversity with regards to stack selection
-  darts <- 0.01 # ownership cutoff for dart throw players; lower for big slates
-  min_own <- 0.7
+  variance <- 0 # increase here increases lineup diversity with regards to stack selection
+  darts <- 0.00 # ownership cutoff for dart throw players; lower for big slates
+  num_darts <- 2 # max players below 'darts' ownership allowed
+  min_own <- 0.00 # combined min own threshold
+  pp_factor <- .6 # increase here increases odds of getting a PP line as a stack; likely better for larger slates
   
-  ### May want to add a min combined own threshhold; seems like ~1/3 of the top 30 owned are in top 1% plays; probably want min 5 of those in any lineup
-  
-  timeout_threshhold <- 0.8
+  timeout_threshhold <- 0.3
   
   
 if(!testing){
@@ -59,6 +59,7 @@ projections <- read_sheet("https://docs.google.com/spreadsheets/d/1ktMclwMSxcjW3
 
    odata <- data
 }
+  times_stacked <- data.frame(stack_name = c(gsub(" ", "", paste0(teams, "1")), gsub(" ", "", paste0(teams, "2")), gsub(" ", "", paste0(teams, "3")), gsub(" ", "", paste0(teams, "4")), gsub(" ", "", paste0(teams, "PP"))), stacked = 0)
   
 timeouts <- 0
 rm(lineups)
@@ -95,11 +96,11 @@ while(t < num_lineups){
       pp_line <- data %>%
       filter(PP.Line.1 == TRUE) %>%
       group_by(Team) %>%
-      summarise(line_proj = sum(fpts_proj)/2, cost = sum(salary)) %>%
+      summarise(line_proj = sum(fpts_proj)*pp_factor, cost = sum(salary)) %>%
       mutate(stack = gsub(" ", "", paste(Team, "PP")))
       
       all_lines <- rbind(first_line, second_line, third_line, fourth_line, pp_line)
-      all_lines$select <- runif(length(all_lines$Team), 0, all_lines$line_proj+variance)
+      all_lines$select <- runif(length(all_lines$Team), 0, sqrt(all_lines$line_proj)+variance)
       all_lines <- all_lines %>%
         group_by(Team) %>%
         slice_max(select)
@@ -112,14 +113,14 @@ while(t < num_lineups){
     
       data<- data %>%
         mutate(stackline = case_when(
-          gsub(" ", "", paste0(Team, Line)) == stacks$stack[1] ~ "stack1",
-          gsub(" ", "", paste0(Team, Line)) == stacks$stack[2] ~ "stack2",
-          Position %in% c("G") & opp_team %in% stacks$stack ~ "opp_g",
+          gsub(" ", "", paste0(Team, Line)) == stacks$stack[1] | gsub(" ", "", paste0(Team, "PP")) == stacks$stack[1]~ "stack1",
+          gsub(" ", "", paste0(Team, Line)) == stacks$stack[2] | gsub(" ", "", paste0(Team, "PP")) == stacks$stack[2] ~ "stack2",
+          Position %in% c("G") & opp_team %in% stacks$Team ~ "opp_g",
           Position %in% c("G") ~ "G",
           Team %in% stacks$Team ~ "ignore",
           T ~ "unstacked"
         ))
-
+    
   
 ### my optimizer
 
@@ -139,7 +140,7 @@ vdef <- as.numeric(data$Position == "D")
 vgoal <- as.numeric(data$Position == "G")
 vutil <- as.numeric(!vgoal)
 vplaying <- as.numeric(data$fpts_proj > 0)
-vdarts <- data$DKOwnProj < darts & !data$stackline  == "stackF"
+vdarts <- as.numeric(data$DKOwnProj <= darts & data$stackline  == "unstacked" & !data$Position == "G")
 vstack1 <- as.numeric(data$stackline == "stack1")
 vstack2 <- as.numeric(data$stackline == "stack2")
 voneoff <- as.numeric(data$stackline == "unstacked")
@@ -155,7 +156,7 @@ matrix_vector[is.infinite(matrix_vector)] <- 0
 const.mat = matrix(matrix_vector, nrow = length(matrix_vector)/length(data$salary), byrow = TRUE)
 
 ## Define constraints and direction - 50000 salary
-const.rhs = c(50000,  2,  3,  2,   1,    8,    9, 1, stack1size, stack2size, 1, 0, min_own)
+const.rhs = c(50000,  2,  3,  2,   1,    8,    9, num_darts, stack1size, stack2size, 1, 0, min_own)
 const.dir = c("<=", ">=",">=",">=", "==", "==", "==",  "<=", "==","==", ">=", "==", ">=")
 
 
@@ -198,6 +199,8 @@ if(t > 0){
 }
 lineups <- lineups %>% unique()
  t <- ncol(lineups)
+       times_stacked <- mutate(times_stacked, stacked = case_when(stack_name %in% stacks$stack ~ stacked + 1, T ~ stacked))
+
 }
  #}
     
@@ -216,7 +219,7 @@ ownership$ownership_pct <- 0
 for(i in 1:length(ownership$player)){
   ownership$ownership_pct[i] = sum(lineups == ownership$player_id[i])
 }
-ownership$ownership_pct <- ownership$ownership_pct/ length(lineups[,1])*100
+ownership$ownership_pct <- ownership$ownership_pct/ num_lineups*100
 ownership <- ownership[order(ownership$ownership_pct, decreasing = TRUE),]
 
 cat("\nBuild fails: ", timeouts-t)
