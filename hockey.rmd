@@ -27,18 +27,21 @@ library(tm)
  
 # stacks may need to be full info from all_lines for creating the vectors
 
-  num_lineups <- 8
+  num_lineups <- 20
   stack1size <- 4
   stack2size <- 3
-  testing <- F
-  variance <- 0 # increase here increases lineup diversity with regards to stack selection
-  darts <- 0.00 # ownership cutoff for dart throw players; lower for big slates
-  num_darts <- 2 # max players below 'darts' ownership allowed
-  min_own <- 0.00 # combined min own threshold
-  pp_factor <- .6 # increase here increases odds of getting a PP line as a stack; likely better for larger slates
+  testing <- T
+  variance <- 50 # increase here increases lineup diversity with regards to stack selection; check times_stacked to ensure appropriate diversity
+  darts <- 3 # projection cutoff for dart throw players; also affects which D can be included in stacks
+  num_darts <- 1 # max players below 'darts' projection allowed
+  min_own <- 0.3 # combined min own threshold - if ownership is available, probably consider needing some chalk; otherwise set to 0
+  pp_factor <- -.8 # increase here increases odds of getting a PP line as a stack; likely better for larger slates
+  need_value <- 2.5 # affects how much stack price impacts selection
+  min_salary <- 48500
   
   timeout_threshhold <- 0.3
-  
+  bans <- NULL #
+  pb <- txtProgressBar(0, num_lineups, style = 3)
   
 if(!testing){
 data <- read_dk("C:/Users/jorda/Downloads/DKSalariesNHL.csv")
@@ -59,7 +62,7 @@ projections <- read_sheet("https://docs.google.com/spreadsheets/d/1ktMclwMSxcjW3
 
    odata <- data
 }
-  times_stacked <- data.frame(stack_name = c(gsub(" ", "", paste0(teams, "1")), gsub(" ", "", paste0(teams, "2")), gsub(" ", "", paste0(teams, "3")), gsub(" ", "", paste0(teams, "4")), gsub(" ", "", paste0(teams, "PP"))), stacked = 0)
+  times_stacked <- data.frame(stack_name = c(gsub(" ", "", paste0(teams, "1")), gsub(" ", "", paste0(teams, "2")), gsub(" ", "", paste0(teams, "PP"))), stacked = 0)
   
 timeouts <- 0
 rm(lineups)
@@ -71,55 +74,53 @@ while(t < num_lineups){
   
   data <- odata %>%
     filter(!(player == "Sebastian Aho" & salary <= 3500)) %>%
+    filter(!player %in% bans) %>%
     distinct()
-    
+
       first_line <- data %>%
       filter(Line == 1) %>%
       group_by(Team) %>%
-      summarise(line_proj = sum(fpts_proj), cost = sum(salary)) %>%
+      summarise(line_proj = max(fpts_proj), cost = max(salary)) %>%
       mutate(stack = gsub(" ", "", paste(Team, "1")))
       second_line <- data %>%
       filter(Line == 2) %>%
       group_by(Team) %>%
-      summarise(line_proj = sum(fpts_proj), cost = sum(salary)) %>%
+      summarise(line_proj = max(fpts_proj), cost = max(salary)) %>%
       mutate(stack = gsub(" ", "", paste(Team, "2")))
-      third_line <- data %>%
-      filter(Line == 3) %>%
-      group_by(Team) %>%
-      summarise(line_proj = sum(fpts_proj), cost = sum(salary)) %>%
-      mutate(stack = gsub(" ", "", paste(Team, "3")))
-      fourth_line <- data %>%
-      filter(Line == 4) %>%
-      group_by(Team) %>%
-      summarise(line_proj = sum(fpts_proj), cost = sum(salary)) %>%
-      mutate(stack = gsub(" ", "", paste(Team, "4")))
+      # third_line <- data %>%
+      # filter(Line == 3) %>%
+      # group_by(Team) %>%
+      # summarise(line_proj = max(fpts_proj), cost = sum(salary)) %>%
+      # mutate(stack = gsub(" ", "", paste(Team, "3")))
+      # fourth_line <- data %>%
+      # filter(Line == 4) %>%
+      # group_by(Team) %>%
+      # summarise(line_proj = max(fpts_proj), cost = sum(salary)) %>%
+      # mutate(stack = gsub(" ", "", paste(Team, "4")))
       pp_line <- data %>%
       filter(PP.Line.1 == TRUE) %>%
       group_by(Team) %>%
-      summarise(line_proj = sum(fpts_proj)*pp_factor, cost = sum(salary)) %>%
+      summarise(line_proj = max(fpts_proj)*pp_factor, cost = max(salary)) %>%
       mutate(stack = gsub(" ", "", paste(Team, "PP")))
       
-      all_lines <- rbind(first_line, second_line, third_line, fourth_line, pp_line)
-      all_lines$select <- runif(length(all_lines$Team), 0, sqrt(all_lines$line_proj)+variance)
+      all_lines <- rbind(first_line, second_line, pp_line)#third_line, fourth_line)
+      all_lines$line_proj <- rnorm(nrow(all_lines), sqrt(all_lines$line_proj+sqrt(all_lines$cost)), 5)
+      all_lines$line_proj[all_lines$line_proj < 0] <- 0
       all_lines <- all_lines %>%
         group_by(Team) %>%
-        slice_max(select)
-      
-      all_lines <- all_lines[order(all_lines$select, decreasing = T),]
-      
-      stacks <- all_lines %>%
-        ungroup() %>%
-        slice_max(order_by = select, n = 2)
+        slice_max(line_proj) %>%
+        ungroup()
+      stacks <- all_lines[sample(seq_len(nrow(all_lines)), 2, prob = all_lines$line_proj),]
     
       data<- data %>%
         mutate(stackline = case_when(
-          gsub(" ", "", paste0(Team, Line)) == stacks$stack[1] | gsub(" ", "", paste0(Team, "PP")) == stacks$stack[1]~ "stack1",
-          gsub(" ", "", paste0(Team, Line)) == stacks$stack[2] | gsub(" ", "", paste0(Team, "PP")) == stacks$stack[2] ~ "stack2",
+          (gsub(" ", "", paste0(Team, Line)) == stacks$stack[1] & (Position %in% c("C", "W") | ((Position == "D") & fpts_proj > darts)))| gsub(" ", "", paste0(Team, "PP")) == stacks$stack[1]~ "stack1",
+          (gsub(" ", "", paste0(Team, Line)) == stacks$stack[2] & (Position %in% c("C", "W") | ((Position == "D") & fpts_proj > darts)))| gsub(" ", "", paste0(Team, "PP")) == stacks$stack[2] ~ "stack2",
           Position %in% c("G") & opp_team %in% stacks$Team ~ "opp_g",
           Position %in% c("G") ~ "G",
           Team %in% stacks$Team ~ "ignore",
           T ~ "unstacked"
-        ))
+        ), fpts_proj = case_when(fpts_proj <0 ~ 0, T ~ fpts_proj))
     
   
 ### my optimizer
@@ -127,7 +128,9 @@ while(t < num_lineups){
 
   
 ## Objective
-
+data$fpts_proj[is.na(data$fpts_proj)] <- 0
+data$fpts_proj[is.nan(data$fpts_proj)] <- 0
+data$fpts_proj[is.infinite(data$fpts_proj)] <- 0
 objective.in <- rnorm(length(data$fpts_proj), data$fpts_proj, sd = 2+data$fpts_proj/4)
 
 ## Constraint matrix - salary, is in a stack, position, util
@@ -140,14 +143,14 @@ vdef <- as.numeric(data$Position == "D")
 vgoal <- as.numeric(data$Position == "G")
 vutil <- as.numeric(!vgoal)
 vplaying <- as.numeric(data$fpts_proj > 0)
-vdarts <- as.numeric(data$DKOwnProj <= darts & data$stackline  == "unstacked" & !data$Position == "G")
+vdarts <- as.numeric(data$fpts_proj <= darts & data$stackline  == "unstacked" & !data$Position == "G")
 vstack1 <- as.numeric(data$stackline == "stack1")
 vstack2 <- as.numeric(data$stackline == "stack2")
 voneoff <- as.numeric(data$stackline == "unstacked")
 voppg <- as.numeric(data$stackline == "opp_g")
 vown <- data$DKOwnProj
 
-matrix_vector <- c(vsalary, vcenter, vwing, vdef, vgoal, vutil, vplaying,  vdarts, vstack1,vstack2,  voneoff, voppg, vown)
+matrix_vector <- c(vsalary, vsalary, vcenter, vwing, vdef, vgoal, vutil, vplaying,  vdarts, vstack1,vstack2,  voneoff, voppg, vown)
 
   
 matrix_vector[is.na(matrix_vector)] <- 0
@@ -156,8 +159,8 @@ matrix_vector[is.infinite(matrix_vector)] <- 0
 const.mat = matrix(matrix_vector, nrow = length(matrix_vector)/length(data$salary), byrow = TRUE)
 
 ## Define constraints and direction - 50000 salary
-const.rhs = c(50000,  2,  3,  2,   1,    8,    9, num_darts, stack1size, stack2size, 1, 0, min_own)
-const.dir = c("<=", ">=",">=",">=", "==", "==", "==",  "<=", "==","==", ">=", "==", ">=")
+const.rhs = c(50000, min_salary,  2,  3,  2,   1,    8,    9, num_darts, stack1size, stack2size, 1, 0, min_own)
+const.dir = c("<=", ">=",">=",">=",">=", "==", "==", "==",  "<=", "==","==", ">=", "==", ">=")
 
 
 
@@ -200,7 +203,7 @@ if(t > 0){
 lineups <- lineups %>% unique()
  t <- ncol(lineups)
        times_stacked <- mutate(times_stacked, stacked = case_when(stack_name %in% stacks$stack ~ stacked + 1, T ~ stacked))
-
+ setTxtProgressBar(pb, t)
 }
  #}
     
@@ -210,7 +213,8 @@ lineups <- lineups %>% unique()
 
     
 }
-
+close(pb)
+times_stacked <- times_stacked[order(times_stacked$stacked, decreasing = TRUE),]
 
 ownership <- data %>%
   select(player, player_id)
@@ -262,4 +266,3 @@ x <- filter(sheet_data, DKOwnProj > 0 & Position == "G" & DK.Implied.FPs > 0 & D
 fp_model <- lm(DK.Implied.FPs ~ `DK Salary` + DKOwnProj, data = x)
 summary(fp_model)
 ```
-
