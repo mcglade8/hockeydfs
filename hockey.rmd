@@ -267,18 +267,23 @@ fp_model <- lm(DK.Implied.FPs ~ `DK Salary` + DKOwnProj, data = x)
 summary(fp_model)
 ```
 
+
+
 ### Jan 17 optimizer
 ```{r jan-optimizer}
 
 testing <- F
 simplify <- F
-stack1size <- 3
-stack2size <- 4
+stack1size <- 4
+stack2size <- 3
 num_lineups <- 20
+allow_one_skater_against_goalie <- T
 
 if(!testing){
 oprojections <- read_sheet("https://docs.google.com/spreadsheets/d/1ktMclwMSxcjW3WIHOdMhnNpzWcmO6gPqKdtLaAHN2nQ/edit#gid=2082185762")
 }
+
+pb <- txtProgressBar(0, num_lineups, style = 3)
 
 
 n <- 0
@@ -383,10 +388,12 @@ vskaters <- vcenter + vwing + vdef
 vteams <- c()
 
 for(t in 1:nrow(teams)){
-  vteam <- as.numeric(all_considerations$Team==teams$Team[t])
-  vteam_goalie <- as.numeric(all_considerations$which_stack == "goalie" & all_considerations$Team==teams$Team[t])*.5+ as.numeric(all_considerations$which_stack == "goalie" & all_considerations$Team==teams$Opp[t])
+  vteam <- as.numeric(all_considerations$Team==teams$Team[t] & all_considerations$which_stack == "player")*2
+  vteam_stack <- as.numeric(all_considerations$which_stack %in% c("stack1", "stack2") & all_considerations$Team==teams$Team[t])*4
+  vteam_goalie <- as.numeric(all_considerations$which_stack == "goalie" & all_considerations$Team==teams$Team[t])*1
+  vopp_goalie <- as.numeric(all_considerations$which_stack == "goalie" & all_considerations$Team==teams$Opp[t])*(3+as.numeric(!allow_one_skater_against_goalie))
   
-  vteams <- c(vteams, vteam+vteam_goalie) # should be const.dir "<" and const.rhs "2"; team+goalie will count as 1.5, team+opp g = 2
+  vteams <- c(vteams, vteam+vteam_goalie+vteam_stack+vopp_goalie) # should be const.dir "<" and const.rhs "2"; team+goalie will count as 1.5, team+opp g = 2
 }
 
 
@@ -404,7 +411,7 @@ const.dir = c("<=" , ">=",">=",">=","==", "==", "==",                       "=="
 
 for(t in 1:nrow(teams)){
   const.dir <- c(const.dir, "<=")
-  const.rhs <- c(const.rhs, "1.5")
+  const.rhs <- c(const.rhs, 5)
 }
 
 
@@ -473,11 +480,32 @@ if(n==0){
   final_export <- unique(final_export)
   n <- nrow(final_export)
 }
+ setTxtProgressBar(pb, n)
 
 }
+close(pb)
 colnames(final_export) <- c("C", "C", "W", "W", "W", "D", "D", "G", "UTIL")
 
 write.csv(final_export, "C:/Users/jorda/Downloads/DKLineupsNHL.csv", row.names = FALSE)
+
+```
+
+### Lineup Editor
+```{r lineup-editor}
+
+### Build lineups above, then use this to edit entries for direct upload
+
+plineups <- read.csv("C:/Users/jorda/Downloads/DKEntriesNHL.csv")
+
+plineups <- filter(plineups, !is.na(Entry.ID) & !is.na(as.numeric(Entry.ID))) %>%
+  select(Entry.ID, Contest.Name, Contest.ID, Entry.Fee)
+
+newlineups <- read.csv("C:/Users/jorda/Downloads/DKLineupsNHL.csv")
+
+newlineups <- cbind(plineups, newlineups)
+colnames(newlineups) <- c("Entry ID", "Contest Name", "Contest ID", "Entry Fee", "C", "C", "W", "W", "W", "D", "D", "G", "UTIL")
+
+write.csv(newlineups, "C:/Users/jorda/Downloads/DKEntriesNHL.csv", row.names = FALSE)
 
 ```
 
