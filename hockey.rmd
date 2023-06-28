@@ -62,7 +62,7 @@ projections <- read_sheet("https://docs.google.com/spreadsheets/d/1ktMclwMSxcjW3
 
    odata <- data
 }
-  times_stacked <- data.frame(stack_name = c(gsub(" ", "", paste0(teams, "1")), gsub(" ", "", paste0(teams, "2")), gsub(" ", "", paste0(teams, "PP"))), stacked = 0)
+  times_stacked <- data.frame(stack_name = c(gsub(" ", "", paste0(teams, "1")), gsub(" ", "", paste0(teams, "2")), gsub(" ", "", paste0(teams, "3")),gsub(" ", "", paste0(teams, "4")),gsub(" ", "", paste0(teams, "PP"))), stacked = 0)
   
 timeouts <- 0
 rm(lineups)
@@ -87,23 +87,23 @@ while(t < num_lineups){
       group_by(Team) %>%
       summarise(line_proj = max(fpts_proj), cost = max(salary)) %>%
       mutate(stack = gsub(" ", "", paste(Team, "2")))
-      # third_line <- data %>%
-      # filter(Line == 3) %>%
-      # group_by(Team) %>%
-      # summarise(line_proj = max(fpts_proj), cost = sum(salary)) %>%
-      # mutate(stack = gsub(" ", "", paste(Team, "3")))
-      # fourth_line <- data %>%
-      # filter(Line == 4) %>%
-      # group_by(Team) %>%
-      # summarise(line_proj = max(fpts_proj), cost = sum(salary)) %>%
-      # mutate(stack = gsub(" ", "", paste(Team, "4")))
+      third_line <- data %>%
+      filter(Line == 3) %>%
+      group_by(Team) %>%
+      summarise(line_proj = max(fpts_proj), cost = sum(salary)) %>%
+      mutate(stack = gsub(" ", "", paste(Team, "3")))
+      fourth_line <- data %>%
+      filter(Line == 4) %>%
+      group_by(Team) %>%
+      summarise(line_proj = max(fpts_proj), cost = sum(salary)) %>%
+      mutate(stack = gsub(" ", "", paste(Team, "4")))
       pp_line <- data %>%
       filter(PP.Line.1 == TRUE) %>%
       group_by(Team) %>%
       summarise(line_proj = max(fpts_proj)*pp_factor, cost = max(salary)) %>%
       mutate(stack = gsub(" ", "", paste(Team, "PP")))
       
-      all_lines <- rbind(first_line, second_line, pp_line)#third_line, fourth_line)
+      all_lines <- rbind(first_line, second_line, pp_line, third_line, fourth_line)
       all_lines$line_proj <- rnorm(nrow(all_lines), sqrt(all_lines$line_proj+sqrt(all_lines$cost)), 5)
       all_lines$line_proj[all_lines$line_proj < 0] <- 0
       all_lines <- all_lines %>%
@@ -276,12 +276,21 @@ testing <- F
 simplify <- F
 stack1size <- 4
 stack2size <- 3
-num_lineups <- 20
-allow_one_skater_against_goalie <- T
+num_lineups <- 40
+allow_one_skater_against_goalie <- F
+core <- c("CHI")
+stacks_in_core <- 0 #set to 0 to let builder do its thing without constraint\
+bans <- NULL#c("Justin Barron")
+own_cap <- .000
 
 if(!testing){
-oprojections <- read_sheet("https://docs.google.com/spreadsheets/d/1ktMclwMSxcjW3WIHOdMhnNpzWcmO6gPqKdtLaAHN2nQ/edit#gid=2082185762")
+oprojections <- read_sheet("https://docs.google.com/spreadsheets/d/1ktMclwMSxcjW3WIHOdMhnNpzWcmO6gPqKdtLaAHN2nQ/edit#gid=2082185762") %>%
+  filter(!Name %in% bans, !is.na(Name))
 }
+
+oprojections <- oprojections %>%
+  filter(!Line == "OUT" | is.na(Line == "OUT"), ownership >= own_cap) %>%
+  unique()
 
 pb <- txtProgressBar(0, num_lineups, style = 3)
 
@@ -385,6 +394,7 @@ vdef <- all_considerations$ndef
 vsalary <- all_considerations$`DK Salary`
 vselect_limit <- as.numeric(all_considerations$build_proj > 0)
 vskaters <- vcenter + vwing + vdef
+vcore <- as.numeric(all_considerations$Team %in% core & all_considerations$which_stack %in% c("stack1", "stack2"))
 vteams <- c()
 
 for(t in 1:nrow(teams)){
@@ -397,7 +407,7 @@ for(t in 1:nrow(teams)){
 }
 
 
-matrix_vector <- c(vsalary, vcenter, vwing, vdef, vgoal, vstack1,vstack2,  vplayer, vselect_limit, vskaters, vteams) #vteams must be listed last
+matrix_vector <- c(vsalary, vcenter, vwing, vdef, vgoal, vstack1,vstack2,  vplayer, vselect_limit, vskaters, vcore, vteams) #vteams must be listed last
 
 
 matrix_vector[is.na(matrix_vector)] <- 0
@@ -406,8 +416,8 @@ matrix_vector[is.infinite(matrix_vector)] <- 0
 const.mat = matrix(matrix_vector, nrow = length(matrix_vector)/nrow(all_considerations), byrow = TRUE)
 # 
 # ## Define constraints and direction - 50000 salary
-const.rhs = c(50000,    2,   3,   2,   1,    1,    1,    8-stack1size-stack2size,    11-stack1size-stack2size,    8)
-const.dir = c("<=" , ">=",">=",">=","==", "==", "==",                       "==",                        "==", "==")
+const.rhs = c(50000,    2,   3,   2,   1,    1,    1,    8-stack1size-stack2size,    11-stack1size-stack2size,    8,    stacks_in_core)
+const.dir = c("<=" , ">=",">=",">=","==", "==", "==",                       "==",                        "==", "==",              ">=")
 
 for(t in 1:nrow(teams)){
   const.dir <- c(const.dir, "<=")
@@ -426,6 +436,8 @@ all_considerations$optimal <- optimum$solution
 
 lineup <- all_considerations %>%
   filter(optimal == 1)
+
+if(nrow(lineup) > 0){
 
 if(grepl("PP", lineup$Name[which(lineup$which_stack=="stack1")], fixed = TRUE)){
   lineup_stack1 <- stack1pp %>%
@@ -478,9 +490,11 @@ if(n==0){
 }else{
   final_export <- rbind(final_export, export)
   final_export <- unique(final_export)
+  final_export <- final_export[complete.cases(final_export),]
   n <- nrow(final_export)
 }
  setTxtProgressBar(pb, n)
+}
 
 }
 close(pb)
@@ -488,6 +502,7 @@ colnames(final_export) <- c("C", "C", "W", "W", "W", "D", "D", "G", "UTIL")
 
 write.csv(final_export, "C:/Users/jorda/Downloads/DKLineupsNHL.csv", row.names = FALSE)
 
+#test <- final_export[complete.cases(final_export),]
 ```
 
 ### Lineup Editor
@@ -510,3 +525,51 @@ write.csv(newlineups, "C:/Users/jorda/Downloads/DKEntriesNHL.csv", row.names = F
 ```
 
 
+
+### Historic results
+```{r historic-results}
+
+historic_results <- read.csv("C:/Users/jorda/Downloads/Historic Results - NHL.csv") %>%
+  filter(!implied_win == "#N/A", !Actual == "#N/A") %>%
+  mutate(implied_win = as.numeric(implied_win))
+
+historic_results_goalies <- historic_results %>%
+  filter(Position == "G", !Actual == 0)
+
+historic_results_skaters <- historic_results %>%
+  filter(!Position == "G", !Actual == 0)
+
+hr_stacks <- historic_results_skaters[complete.cases(historic_results_skaters),] %>%
+  group_by(Team, Line, DKLineProj) %>%
+  summarise(Actual = sum(as.numeric(Actual)), Ownership = sum(as.numeric(Ownership)), implied_win = mean(implied_win), imp_p = sum(imp_p), imp_a = sum(imp_a), imp_bs = sum(imp_bs), imp_sog = sum(imp_sog), slate_games = mean(slate_games), DK.Implied.FPs = sum(DK.Implied.FPs))
+
+lm_actuals <- lm(Actual ~  implied_win + DK.Implied.FPs + slate_games, data = historic_results_skaters)
+summary(lm_actuals)
+lm_owns <- lm(Ownership ~  implied_win + DK.Implied.FPs + slate_games, data = historic_results_skaters)
+summary(lm_owns)
+
+lm_actualg <- lm(Actual ~ implied_win +  DK.Implied.FPs + slate_games, data = historic_results_goalies)
+summary(lm_actualg)
+lm_owng <- lm(Ownership ~ implied_win + DK.Implied.FPs + slate_games, data = historic_results_goalies)
+summary(lm_owng)
+
+lm_actuals <- lm(Actual ~  implied_win + DK.Implied.FPs + slate_games, data = historic_results_skaters)
+summary(lm_actuals)
+lm_owns <- lm(Ownership ~  implied_win + DK.Implied.FPs + slate_games, data = historic_results_skaters)
+summary(lm_owns)
+
+lm_actualstack <- lm(Actual ~ DK.Implied.FPs , data = hr_stacks)
+summary(lm_actualstack)
+lm_ownstack <- lm(Ownership ~ implied_win + DK.Implied.FPs + slate_games, data = hr_stacks)
+summary(lm_ownstack)
+
+hr_stacks$projection <- predict(lm_actualstack, hr_stacks)
+hr_stacks$proj_own <- predict(lm_ownstack, hr_stacks)
+
+ggplot(hr_stacks) + 
+  geom_point(aes(DK.Implied.FPs, Actual), color = "blue")+
+  geom_point(aes(projection, Actual), color = "red")
+
+ggplot(hr_stacks) +
+  geom_point(aes(proj_own, Ownership), color = "green")
+```
