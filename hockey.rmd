@@ -30,7 +30,7 @@ options(dplyr.summarise.inform = FALSE)
   num_lineups <- 20
   stack1size <- 4
   stack2size <- 3
-  testing <- T
+  testing <- F
   variance <- 50 # increase here increases lineup diversity with regards to stack selection; check times_stacked to ensure appropriate diversity
   darts <- 3 # projection cutoff for dart throw players; also affects which D can be included in stacks
   num_darts <- 1 # max players below 'darts' projection allowed
@@ -276,11 +276,15 @@ testing <- F
 simplify <- F
 stack1size <- 4
 stack2size <- 3
-num_lineups <- 40
+num_lineups <- 20
 allow_one_skater_against_goalie <- F
-core <- c("CHI")
+core <- c("EDM", "COL")
 stacks_in_core <- 0 #set to 0 to let builder do its thing without constraint\
 bans <- NULL#c("Justin Barron")
+jvalue_min <- 3
+min_sum_jvalue <- 30 # combined jvalues for lineup
+top_option_jvalue <- 4 # number (count) of plays out of [stack1, stack2, individual, goalie] that must be above top_play_jvalue
+top_play_jvalue <- 3.3 # controls jvalue threshold for above
 own_cap <- .000
 
 if(!testing){
@@ -308,6 +312,8 @@ if(simplify){
 projections$build_proj <- rnorm(nrow(projections), mean = projections$DK.Implied.FPs, sd = projections$DK.Implied.FPs/2)
 #projections$stackline <- gsub(" ", "", paste0(projections$Team, projections$Line))
 
+projections$top_options_jvalue <- as.numeric(projections$jvalue > top_option_jvalue)
+
 stacked_players <- projections %>%
   filter(Line %in% c("1", "2")) %>%
   mutate(stackline = gsub(" ", "", paste0(Team, Line)))
@@ -333,28 +339,33 @@ summarise_stack1 <- stack1 %>%
             `DK Salary` = sum(`DK Salary`),
             ncenter = sum(Position == "C"),
             nwing = sum(Position == "W"),
-            ndef = sum(Position == "D"))
+            ndef = sum(Position == "D"),
+            kelly = sum(kelly),
+            jvalue = sum(jvalue))
 
 stack2 <- stacked_players%>%
   group_by(Team, stackline)%>%
   slice_max(order_by = build_proj, n = stack2size)
 
 summarise_stack2 <- stack2 %>%
-  summarise(build_proj = sum(build_proj), `DK Salary` = sum(`DK Salary`), ncenter = sum(Position == "C"), nwing = sum(Position == "W"), ndef = sum(Position == "D"))
+  summarise(build_proj = sum(build_proj), `DK Salary` = sum(`DK Salary`), ncenter = sum(Position == "C"), nwing = sum(Position == "W"), ndef = sum(Position == "D"), kelly = sum(kelly),
+            jvalue = sum(jvalue))
 
 stack1pp <- pp_players%>%
   group_by(Team, stackline)%>%
   slice_max(order_by = build_proj, n = stack1size) 
 
 summarise_stack1pp <- stack1pp %>%
-  summarise(build_proj = sum(build_proj), `DK Salary` = sum(`DK Salary`), ncenter = sum(Position == "C"), nwing = sum(Position == "W"), ndef = sum(Position == "D"))
+  summarise(build_proj = sum(build_proj), `DK Salary` = sum(`DK Salary`), ncenter = sum(Position == "C"), nwing = sum(Position == "W"), ndef = sum(Position == "D"), kelly = sum(kelly),
+            jvalue = sum(jvalue))
 
 stack2pp <- pp_players%>%
   group_by(Team, stackline)%>%
   slice_max(order_by = build_proj, n = stack2size)
 
 summarise_stack2pp <- stack2pp %>%
-  summarise(build_proj = sum(build_proj), `DK Salary` = sum(`DK Salary`), ncenter = sum(Position == "C"), nwing = sum(Position == "W"), ndef = sum(Position == "D"))
+  summarise(build_proj = sum(build_proj), `DK Salary` = sum(`DK Salary`), ncenter = sum(Position == "C"), nwing = sum(Position == "W"), ndef = sum(Position == "D"), kelly = sum(kelly),
+            jvalue = sum(jvalue))
 
 summarise_stack1 <- rbind(summarise_stack1, summarise_stack1pp)
 summarise_stack2 <- rbind(summarise_stack2, summarise_stack2pp)
@@ -366,15 +377,16 @@ stack_list <- rbind(summarise_stack1, summarise_stack2)
 
 stack_list <- rename(stack_list, Name = stackline)
 
-goalies <- select(goalies, Team, Name, build_proj, `DK Salary`)
+goalies <- select(goalies, Team, Name, build_proj, `DK Salary`, kelly, jvalue)
 goalies$which_stack <- "goalie"
 goalies$ncenter <- 0
 goalies$nwing <- 0
 goalies$ndef <- 0
 
+
 players <- projections %>%
   filter(! Name %in% goalies$Name) %>%
-  select(Team, Name, build_proj, `DK Salary`, Position)
+  select(Team, Name, build_proj, `DK Salary`, Position, kelly, jvalue)
 players$which_stack <- "player"
 players$ncenter <- players$Position == "C"
 players$nwing <- players$Position == "W"
@@ -395,6 +407,9 @@ vsalary <- all_considerations$`DK Salary`
 vselect_limit <- as.numeric(all_considerations$build_proj > 0)
 vskaters <- vcenter + vwing + vdef
 vcore <- as.numeric(all_considerations$Team %in% core & all_considerations$which_stack %in% c("stack1", "stack2"))
+vjvalue <- as.numeric(all_considerations$jvalue > top_play_jvalue)
+vsumjvalue <- as.numeric(all_considerations$jvalue)
+vtop_options_jvalue <- all_considerations$top_options_jvalue
 vteams <- c()
 
 for(t in 1:nrow(teams)){
@@ -407,7 +422,7 @@ for(t in 1:nrow(teams)){
 }
 
 
-matrix_vector <- c(vsalary, vcenter, vwing, vdef, vgoal, vstack1,vstack2,  vplayer, vselect_limit, vskaters, vcore, vteams) #vteams must be listed last
+matrix_vector <- c(vsalary, vcenter, vwing, vdef, vgoal, vstack1,vstack2,  vplayer, vselect_limit, vskaters, vcore, vjvalue, vsumjvalue, vteams) #vteams must be listed last
 
 
 matrix_vector[is.na(matrix_vector)] <- 0
@@ -416,8 +431,8 @@ matrix_vector[is.infinite(matrix_vector)] <- 0
 const.mat = matrix(matrix_vector, nrow = length(matrix_vector)/nrow(all_considerations), byrow = TRUE)
 # 
 # ## Define constraints and direction - 50000 salary
-const.rhs = c(50000,    2,   3,   2,   1,    1,    1,    8-stack1size-stack2size,    11-stack1size-stack2size,    8,    stacks_in_core)
-const.dir = c("<=" , ">=",">=",">=","==", "==", "==",                       "==",                        "==", "==",              ">=")
+const.rhs = c(50000,    2,   3,   2,   1,    1,    1,    8-stack1size-stack2size,    11-stack1size-stack2size,    8,    stacks_in_core,    jvalue_min, min_sum_jvalue)
+const.dir = c("<=" , ">=",">=",">=","==", "==", "==",                       "==",                        "==", "==",              ">=",          ">=", ">=")
 
 for(t in 1:nrow(teams)){
   const.dir <- c(const.dir, "<=")
@@ -499,6 +514,17 @@ if(n==0){
 }
 close(pb)
 colnames(final_export) <- c("C", "C", "W", "W", "W", "D", "D", "G", "UTIL")
+
+ownership <- oprojections %>%
+  select(Name, DKid, Team, Line, PP.Line.1)
+ownership$ownership_pct <- 0
+
+for(i in 1:length(ownership$Name)){
+  ownership$ownership_pct[i] = sum(final_export == ownership$DKid[i])
+}
+ownership$ownership_pct <- ownership$ownership_pct/ num_lineups*100
+ownership <- ownership[order(ownership$ownership_pct, decreasing = TRUE),]
+View(ownership)
 
 write.csv(final_export, "C:/Users/jorda/Downloads/DKLineupsNHL.csv", row.names = FALSE)
 
